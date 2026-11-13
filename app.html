@@ -40,10 +40,10 @@ async function boot(){
 function nav(){ $('#nav').innerHTML=`${window.isAdmin?'<a class="btn alt sm" href="admin.html" style="margin-right:8px">Approve doctors</a>':''}<span class="mut" style="margin-right:10px">${esc(doc.full_name)}</span><button class="btn alt sm" id="so">Sign out</button>`; $('#so').onclick=async()=>{await sb.auth.signOut();location.hash='';location.reload();}; }
 function fatal(m){ root.innerHTML=`<div class="card auth"><div class="msg err">${esc(m)}</div><button class="btn alt" onclick="sb.auth.signOut().then(()=>location.reload())">Sign out</button></div>`; }
 
-function mobileOf(x){ return String(x||'').replace(/\D/g,'').replace(/^(91|0)(?=\d{10}$)/,''); }
-function loginEmail(id){ id=String(id||'').trim(); return id.includes('@')?id:'d'+mobileOf(id)+'@doctors.recover.yorohealth.com'; }
-const SIGNUP_ERR={bad_mobile:'Please enter a valid 10-digit Indian mobile number.',bad_password:'Password must be at least 8 characters.',missing_fields:'Please fill in all the details.',mobile_taken:'This mobile number is already registered. Please log in instead.'};
-function authView(){
+const AUTH_ERR={bad_mobile:'Please enter a valid 10-digit Indian mobile number.',bad_pin:'The PIN must be exactly 6 digits.',weak_pin:'That PIN is too easy to guess. Please choose another.',missing_fields:'Please fill in all the details.',mobile_taken:'This mobile number is already registered. Please log in instead.'};
+async function rcAuth(body){ try{ const r=await fetch(RC.url+'/functions/v1/rc-auth',{method:'POST',headers:{'content-type':'application/json',apikey:RC.key},body:JSON.stringify(body)}); return {ok:r.ok,...await r.json().catch(()=>({}))}; }catch(_){ return {ok:false}; } }
+const pinInput=(name,ac)=>`<input name="${name}" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" required autocomplete="${ac}" placeholder="6 digits" style="letter-spacing:6px;font-size:20px">`;
+function authView(staff){
   const signup=location.hash==='#signup';
   root.innerHTML=`<div class="card auth"><div class="tabs"><button class="btn ${signup?'alt':''}" id="t1">Log in</button><button class="btn ${signup?'':'alt'}" id="t2">Enrol as a doctor</button></div><div id="msg"></div>
   <form id="f">${signup?`
@@ -51,24 +51,37 @@ function authView(){
    <div class="row"><div><label>Clinic or hospital</label><input name="clinic" required></div><div><label>Specialty</label><input name="specialty" required placeholder="Orthopaedics"></div></div>
    <label>City</label><input name="city" required>
    <label>Medical council registration no. <span class="mut" style="font-weight:400">(optional)</span></label><input name="council_no">
-   <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="tel" placeholder="98xxxxxxxx">`:`
-   <label>Mobile number</label><input name="mobile" required autocomplete="username" placeholder="98xxxxxxxx"><span class="mut" style="font-size:12px">YORO staff can use their email here.</span>`}
-   <label>Password</label><input name="password" type="password" required minlength="8" autocomplete="${signup?'new-password':'current-password'}" placeholder="At least 8 characters">
+   <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="tel" placeholder="98xxxxxxxx">
+   <div class="row"><div><label>Choose a 6-digit PIN</label>${pinInput('pin','new-password')}</div><div><label>Enter the PIN again</label>${pinInput('pin2','new-password')}</div></div>`
+  : staff?`
+   <label>Staff email</label><input name="email" type="email" required autocomplete="username">
+   <label>Password</label><input name="password" type="password" required autocomplete="current-password">`
+  :`
+   <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="username" placeholder="98xxxxxxxx">
+   <label>6-digit PIN</label>${pinInput('pin','current-password')}`}
    <p style="margin-top:16px"><button class="btn" style="width:100%">${signup?'Create my account':'Log in'}</button></p>
-   ${signup?'<p class="mut" style="font-size:13px">You can log in straight away with your mobile number and password. YORO will call you to confirm your details before you can add patients.</p>':''}
+   ${signup?'<p class="mut" style="font-size:13px">You can log in straight away with your mobile number and PIN. YORO will call you to confirm your details before you can add patients.</p>'
+    :`<p class="mut" style="font-size:13px">${staff?'<a href="#" id="sw">Doctor login (mobile and PIN)</a>':'Forgot your PIN? Call YORO on 08031152400 to reset it. · <a href="#" id="sw">YORO staff login</a>'}</p>`}
   </form></div>`;
   $('#t1').onclick=()=>{location.hash='';authView()}; $('#t2').onclick=()=>{location.hash='#signup';authView()};
+  const sw=$('#sw'); if(sw) sw.onclick=e=>{e.preventDefault();authView(!staff);};
   $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=e.target.querySelector('button'); b.disabled=true;
+    const err=t=>{b.disabled=false; m.innerHTML=`<div class="msg err">${t}</div>`;};
     if(signup){
-      let r; try{ r=await fetch(RC.url+'/functions/v1/rc-signup',{method:'POST',headers:{'content-type':'application/json',apikey:RC.key},body:JSON.stringify({full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,council_no:v.council_no,mobile:v.mobile,password:v.password})}); }catch(_){ r=null; }
-      const out=r?await r.json().catch(()=>({})):{};
-      if(!r||!r.ok){ b.disabled=false; m.innerHTML=`<div class="msg err">${SIGNUP_ERR[out.error]||'Could not create the account. Please try again.'}</div>`; return; }
-      const li=await sb.auth.signInWithPassword({email:out.login,password:v.password}); b.disabled=false;
-      if(!li.error){location.hash='';return boot();}
-      m.innerHTML='<div class="msg ok">Account created. Please log in with your mobile number and password.</div>'; location.hash=''; setTimeout(authView,1500);
+      if(!/^\d{6}$/.test(v.pin)) return err(AUTH_ERR.bad_pin);
+      if(v.pin!==v.pin2) return err('The two PINs do not match.');
+      const r=await rcAuth({action:'signup',full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,council_no:v.council_no,mobile:v.mobile,pin:v.pin});
+      if(!r.ok) return err(AUTH_ERR[r.error]||'Could not create the account. Please try again.');
+      if(r.session){ await sb.auth.setSession(r.session); location.hash=''; return boot(); }
+      location.hash=''; authView(); $('#msg').innerHTML='<div class="msg ok">Account created. Please log in with your mobile number and PIN.</div>';
+    } else if(staff){
+      const {error}=await sb.auth.signInWithPassword({email:v.email.trim(),password:v.password});
+      if(error) return err(/invalid login/i.test(error.message)?'Wrong email or password.':esc(error.message)); boot();
     } else {
-      const {error}=await sb.auth.signInWithPassword({email:loginEmail(v.mobile),password:v.password}); b.disabled=false;
-      if(error){m.innerHTML=`<div class="msg err">${/invalid login/i.test(error.message)?'Wrong mobile number or password.':esc(error.message)}</div>`;return;} boot(); }
+      const r=await rcAuth({action:'login',mobile:v.mobile,pin:v.pin});
+      if(!r.ok) return err(r.error==='locked'?`Too many wrong PINs. Please try again in ${r.minutes} minutes, or call YORO on 08031152400.`:`Wrong mobile number or PIN.${r.left?` ${r.left} tries left.`:''}`);
+      await sb.auth.setSession(r.session); boot();
+    }
   };
 }
 

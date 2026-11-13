@@ -40,29 +40,35 @@ async function boot(){
 function nav(){ $('#nav').innerHTML=`${window.isAdmin?'<a class="btn alt sm" href="admin.html" style="margin-right:8px">Approve doctors</a>':''}<span class="mut" style="margin-right:10px">${esc(doc.full_name)}</span><button class="btn alt sm" id="so">Sign out</button>`; $('#so').onclick=async()=>{await sb.auth.signOut();location.hash='';location.reload();}; }
 function fatal(m){ root.innerHTML=`<div class="card auth"><div class="msg err">${esc(m)}</div><button class="btn alt" onclick="sb.auth.signOut().then(()=>location.reload())">Sign out</button></div>`; }
 
+function mobileOf(x){ return String(x||'').replace(/\D/g,'').replace(/^(91|0)(?=\d{10}$)/,''); }
+function loginEmail(id){ id=String(id||'').trim(); return id.includes('@')?id:'d'+mobileOf(id)+'@doctors.recover.yorohealth.com'; }
+const SIGNUP_ERR={bad_mobile:'Please enter a valid 10-digit Indian mobile number.',bad_password:'Password must be at least 8 characters.',missing_fields:'Please fill in all the details.',mobile_taken:'This mobile number is already registered. Please log in instead.'};
 function authView(){
   const signup=location.hash==='#signup';
   root.innerHTML=`<div class="card auth"><div class="tabs"><button class="btn ${signup?'alt':''}" id="t1">Log in</button><button class="btn ${signup?'':'alt'}" id="t2">Enrol as a doctor</button></div><div id="msg"></div>
   <form id="f">${signup?`
    <label>Full name</label><input name="full_name" required minlength="2" placeholder="Dr. Anita Rao">
    <div class="row"><div><label>Clinic or hospital</label><input name="clinic" required></div><div><label>Specialty</label><input name="specialty" required placeholder="Orthopaedics"></div></div>
-   <div class="row"><div><label>City</label><input name="city" required></div><div><label>Mobile</label><input name="phone" required type="tel" placeholder="98xxxxxxxx"></div></div>
-   <label>Medical council registration no.</label><input name="council_no" required minlength="3">`:''}
-   <label>Email</label><input name="email" type="email" required autocomplete="email">
+   <label>City</label><input name="city" required>
+   <label>Medical council registration no. <span class="mut" style="font-weight:400">(optional)</span></label><input name="council_no">
+   <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="tel" placeholder="98xxxxxxxx">`:`
+   <label>Mobile number</label><input name="mobile" required autocomplete="username" placeholder="98xxxxxxxx"><span class="mut" style="font-size:12px">YORO staff can use their email here.</span>`}
    <label>Password</label><input name="password" type="password" required minlength="8" autocomplete="${signup?'new-password':'current-password'}" placeholder="At least 8 characters">
    <p style="margin-top:16px"><button class="btn" style="width:100%">${signup?'Create my account':'Log in'}</button></p>
-   ${signup?'<p class="mut" style="font-size:13px">No email link needed: you can log in straight away. We check your registration number before you can add patients, usually within a working day.</p>':''}
+   ${signup?'<p class="mut" style="font-size:13px">You can log in straight away with your mobile number and password. YORO will call you to confirm your details before you can add patients.</p>':''}
   </form></div>`;
   $('#t1').onclick=()=>{location.hash='';authView()}; $('#t2').onclick=()=>{location.hash='#signup';authView()};
   $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=e.target.querySelector('button'); b.disabled=true;
-    if(signup){ const {data,error}=await sb.auth.signUp({email:v.email,password:v.password,options:{data:{full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,phone:v.phone,council_no:v.council_no}}});
-      b.disabled=false; if(error){m.innerHTML=`<div class="msg err">${esc(error.message)}</div>`;return;}
-      if(data.session){location.hash='';return boot();}
-      const li=await sb.auth.signInWithPassword({email:v.email,password:v.password});
+    if(signup){
+      let r; try{ r=await fetch(RC.url+'/functions/v1/rc-signup',{method:'POST',headers:{'content-type':'application/json',apikey:RC.key},body:JSON.stringify({full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,council_no:v.council_no,mobile:v.mobile,password:v.password})}); }catch(_){ r=null; }
+      const out=r?await r.json().catch(()=>({})):{};
+      if(!r||!r.ok){ b.disabled=false; m.innerHTML=`<div class="msg err">${SIGNUP_ERR[out.error]||'Could not create the account. Please try again.'}</div>`; return; }
+      const li=await sb.auth.signInWithPassword({email:out.login,password:v.password}); b.disabled=false;
       if(!li.error){location.hash='';return boot();}
-      m.innerHTML='<div class="msg ok">Account created. Please log in with your email and password.</div>'; location.hash=''; setTimeout(authView,1500);
-    } else { const {error}=await sb.auth.signInWithPassword({email:v.email,password:v.password}); b.disabled=false;
-      if(error){m.innerHTML=`<div class="msg err">${/invalid login/i.test(error.message)?'Wrong email or password.':esc(error.message)}</div>`;return;} boot(); }
+      m.innerHTML='<div class="msg ok">Account created. Please log in with your mobile number and password.</div>'; location.hash=''; setTimeout(authView,1500);
+    } else {
+      const {error}=await sb.auth.signInWithPassword({email:loginEmail(v.mobile),password:v.password}); b.disabled=false;
+      if(error){m.innerHTML=`<div class="msg err">${/invalid login/i.test(error.message)?'Wrong mobile number or password.':esc(error.message)}</div>`;return;} boot(); }
   };
 }
 
@@ -102,7 +108,7 @@ function dash(){
   const n=k=>rows.filter(r=>r.s.k===k).length;
   const unv=!doc.verified;
   root.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin:22px 0 4px;gap:10px;flex-wrap:wrap"><h2 style="margin:0">Follow-up visits</h2><button class="btn" id="add" ${unv?'disabled':''}>+ Enrol a patient</button></div>
-  ${unv?'<div class="msg info">Your registration number is being checked. You can add patients as soon as we confirm it. We will email you. Questions: care@yorohealth.com</div>':''}
+  ${unv?'<div class="msg info">YORO will call you to confirm your details. You can add patients as soon as we approve your account. Questions: care@yorohealth.com</div>':''}
   ${(()=>{const d=pats.map(p=>({p,d:due(p)})).filter(x=>x.d); return d.length?`<div class="card" style="margin-top:14px;border-color:var(--teal)"><h3 style="margin-bottom:6px">Check-ins to send today (${d.length})</h3><p class="mut" style="margin-top:0;font-size:14px">Tap to open WhatsApp with the message ready. Each one takes a few seconds.</p>${d.map(({p,d})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)"><span><b>${esc(p.full_name)}</b> · day ${d.day} after discharge${d.visitTomorrow?' · <b>visit tomorrow</b>':''}</span>${waBtn(p,'Send')}</div>`).join('')}</div>`:''})()}
   <div class="stats"><div class="stat"><b>${n(0)}</b>to call back now</div><div class="stat"><b>${n(1)+n(2)}</b>need a call from the clinic</div><div class="stat"><b>${rows.filter(r=>r.s.cls==='G').length}</b>confirmed or called</div><div class="stat"><b>${pats.length}</b>patients enrolled</div></div>
   <div class="card scroll">${rows.length?`<table><tr><th>Patient</th><th>Procedure</th><th>Follow-up</th><th>Status</th><th></th></tr>${rows.map(({p,s})=>`<tr><td><b>${esc(p.full_name)}</b><br><span class="mut">${esc(p.phone)}</span></td><td>${esc(p.procedure)}</td><td>${fmt(p.followup_date)}</td><td><span class="pill ${s.cls}">${esc(s.label)}</span><br><span class="mut">${esc(s.why)}</span>${s.last&&s.last.note?`<br><i>“${esc(s.last.note)}”</i>`:''}</td>

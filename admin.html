@@ -16,9 +16,9 @@ async function boot(){
   if(error){root.innerHTML=`<div class="msg err">${esc(error.message)}</div>`;return;}
   const pend=data.filter(d=>!d.verified).length;
   root.innerHTML=`<h2 style="margin-top:24px">Doctors (${pend} waiting for approval)</h2>
-  <p class="mut">Check each registration number on the state medical council or NMC register before approving. Approved doctors can enrol patients.</p>
+  <p class="mut">Call the doctor (or check their registration number if given) before approving. Approved doctors can enrol patients.</p>
   <div class="card" style="overflow-x:auto"><table><tr><th>Doctor</th><th>Clinic</th><th>Registration no.</th><th>Mobile</th><th>Signed up</th><th></th></tr>
-  ${data.map(d=>`<tr><td><b>${esc(d.full_name)}</b><br><span class="mut">${esc(d.specialty)}</span></td><td>${esc(d.clinic)}<br><span class="mut">${esc(d.city)}</span></td><td>${esc(d.council_no)}</td><td><a href="tel:${esc(d.phone)}">${esc(d.phone)}</a></td><td>${new Date(d.created_at).toLocaleDateString('en-IN')}</td>
+  ${data.map(d=>`<tr><td><b>${esc(d.full_name)}</b><br><span class="mut">${esc(d.specialty)}</span></td><td>${esc(d.clinic)}<br><span class="mut">${esc(d.city)}</span></td><td>${d.council_no?esc(d.council_no):'<span class="mut">not given</span>'}</td><td><a href="tel:${esc(d.phone)}">${esc(d.phone)}</a></td><td>${new Date(d.created_at).toLocaleDateString('en-IN')}</td>
   <td>${d.verified?`<span class="pill G">Approved</span> <button class="btn alt sm" data-v="${d.id}" data-to="0">Suspend</button>`:`<button class="btn sm" data-v="${d.id}" data-to="1">Approve</button>`}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No doctors yet.</td></tr>'}</table></div>`;
   root.querySelectorAll('[data-v]').forEach(b=>b.onclick=async()=>{ if(b.dataset.to==='0'&&!confirm('Suspend this doctor? They will not be able to add new patients.'))return; b.disabled=true;
     const {error}=await sb.from('rc_doctors').update({verified:b.dataset.to==='1'}).eq('id',b.dataset.v); if(error)alert(error.message); boot(); });

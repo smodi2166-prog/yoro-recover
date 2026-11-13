@@ -9,9 +9,9 @@ const sb=rcClient(), root=document.getElementById('root');
 document.getElementById('so').onclick=async()=>{await sb.auth.signOut();location.href='app.html';};
 async function boot(){
   const {data:{session}}=await sb.auth.getSession();
-  if(!session){root.innerHTML='<div class="msg info" style="margin-top:30px">Please <a href="app.html">log in</a> with your YORO staff email first.</div>';return;}
+  if(!session){root.innerHTML='<div class="msg info" style="margin-top:30px">Please <a href="app.html">log in</a> with your mobile number and PIN first.</div>';return;}
   const {data:adm}=await sb.rpc('rc_is_admin');
-  if(adm!==true){root.innerHTML='<div class="msg err" style="margin-top:30px">This page is for YORO staff only. If you are staff, make sure you confirmed your email address.</div>';return;}
+  if(adm!==true){root.innerHTML='<div class="msg err" style="margin-top:30px">This page is for YORO staff only.</div>';return;}
   const {data,error}=await sb.from('rc_doctors').select('*').order('verified').order('created_at',{ascending:false});
   if(error){root.innerHTML=`<div class="msg err">${esc(error.message)}</div>`;return;}
   const pend=data.filter(d=>!d.verified).length;

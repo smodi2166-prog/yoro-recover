@@ -43,7 +43,7 @@ function fatal(m){ root.innerHTML=`<div class="card auth"><div class="msg err">$
 const AUTH_ERR={bad_mobile:'Please enter a valid 10-digit Indian mobile number.',bad_pin:'The PIN must be exactly 6 digits.',weak_pin:'That PIN is too easy to guess. Please choose another.',missing_fields:'Please fill in all the details.',mobile_taken:'This mobile number is already registered. Please log in instead.'};
 async function rcAuth(body){ try{ const r=await fetch(RC.url+'/functions/v1/rc-auth',{method:'POST',headers:{'content-type':'application/json',apikey:RC.key},body:JSON.stringify(body)}); return {ok:r.ok,...await r.json().catch(()=>({}))}; }catch(_){ return {ok:false}; } }
 const pinInput=(name,ac)=>`<input name="${name}" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" required autocomplete="${ac}" placeholder="6 digits" style="letter-spacing:6px;font-size:20px">`;
-function authView(staff){
+function authView(){
   const signup=location.hash==='#signup';
   root.innerHTML=`<div class="card auth"><div class="tabs"><button class="btn ${signup?'alt':''}" id="t1">Log in</button><button class="btn ${signup?'':'alt'}" id="t2">Enrol as a doctor</button></div><div id="msg"></div>
   <form id="f">${signup?`
@@ -53,18 +53,14 @@ function authView(staff){
    <label>Medical council registration no. <span class="mut" style="font-weight:400">(optional)</span></label><input name="council_no">
    <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="tel" placeholder="98xxxxxxxx">
    <div class="row"><div><label>Choose a 6-digit PIN</label>${pinInput('pin','new-password')}</div><div><label>Enter the PIN again</label>${pinInput('pin2','new-password')}</div></div>`
-  : staff?`
-   <label>Staff email</label><input name="email" type="email" required autocomplete="username">
-   <label>Password</label><input name="password" type="password" required autocomplete="current-password">`
   :`
    <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="username" placeholder="98xxxxxxxx">
    <label>6-digit PIN</label>${pinInput('pin','current-password')}`}
    <p style="margin-top:16px"><button class="btn" style="width:100%">${signup?'Create my account':'Log in'}</button></p>
    ${signup?'<p class="mut" style="font-size:13px">You can log in straight away with your mobile number and PIN. YORO will call you to confirm your details before you can add patients.</p>'
-    :`<p class="mut" style="font-size:13px">${staff?'<a href="#" id="sw">Doctor login (mobile and PIN)</a>':'Forgot your PIN? Call YORO on 08031152400 to reset it. · <a href="#" id="sw">YORO staff login</a>'}</p>`}
+    :'<p class="mut" style="font-size:13px">Forgot your PIN? Call YORO on 08031152400 to reset it.</p>'}
   </form></div>`;
   $('#t1').onclick=()=>{location.hash='';authView()}; $('#t2').onclick=()=>{location.hash='#signup';authView()};
-  const sw=$('#sw'); if(sw) sw.onclick=e=>{e.preventDefault();authView(!staff);};
   $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=e.target.querySelector('button'); b.disabled=true;
     const err=t=>{b.disabled=false; m.innerHTML=`<div class="msg err">${t}</div>`;};
     if(signup){
@@ -74,9 +70,6 @@ function authView(staff){
       if(!r.ok) return err(AUTH_ERR[r.error]||'Could not create the account. Please try again.');
       if(r.session){ await sb.auth.setSession(r.session); location.hash=''; return boot(); }
       location.hash=''; authView(); $('#msg').innerHTML='<div class="msg ok">Account created. Please log in with your mobile number and PIN.</div>';
-    } else if(staff){
-      const {error}=await sb.auth.signInWithPassword({email:v.email.trim(),password:v.password});
-      if(error) return err(/invalid login/i.test(error.message)?'Wrong email or password.':esc(error.message)); boot();
     } else {
       const r=await rcAuth({action:'login',mobile:v.mobile,pin:v.pin});
       if(!r.ok) return err(r.error==='locked'?`Too many wrong PINs. Please try again in ${r.minutes} minutes, or call YORO on 08031152400.`:`Wrong mobile number or PIN.${r.left?` ${r.left} tries left.`:''}`);

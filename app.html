@@ -40,11 +40,23 @@ async function boot(){
 function nav(){ $('#nav').innerHTML=`${window.isAdmin?'<a class="btn alt sm" href="admin.html" style="margin-right:8px">Approve doctors</a>':''}<span class="mut" style="margin-right:10px">${esc(doc.full_name)}</span><button class="btn alt sm" id="so">Sign out</button>`; $('#so').onclick=async()=>{await sb.auth.signOut();location.hash='';location.reload();}; }
 function fatal(m){ root.innerHTML=`<div class="card auth"><div class="msg err">${esc(m)}</div><button class="btn alt" onclick="sb.auth.signOut().then(()=>location.reload())">Sign out</button></div>`; }
 
-const AUTH_ERR={bad_mobile:'Please enter a valid 10-digit Indian mobile number.',bad_pin:'The PIN must be exactly 6 digits.',weak_pin:'That PIN is too easy to guess. Please choose another.',missing_fields:'Please fill in all the details.',mobile_taken:'This mobile number is already registered. Please log in instead.'};
+const AUTH_ERR={bad_mobile:'Please enter a valid 10-digit Indian mobile number.',bad_pin:'The PIN must be exactly 6 digits.',weak_pin:'That PIN is too easy to guess. Please choose another.',missing_fields:'Please fill in all the details.',mobile_taken:'This mobile number is already registered. Please log in instead.',otp_wrong:'That OTP is not correct.',otp_expired:'The OTP has expired. Please send a new one.',wait:'Please wait a minute before asking for another OTP.',too_many:'Too many OTPs today. Please try tomorrow or call YORO on 08031152400.',sms_failed:'Could not send the SMS. Please try again or call YORO on 08031152400.',sms_off:'PIN reset by SMS is not available yet. Please call YORO on 08031152400.'};
 async function rcAuth(body){ try{ const r=await fetch(RC.url+'/functions/v1/rc-auth',{method:'POST',headers:{'content-type':'application/json',apikey:RC.key},body:JSON.stringify(body)}); return {ok:r.ok,...await r.json().catch(()=>({}))}; }catch(_){ return {ok:false}; } }
+let SMS=null; async function smsOn(){ if(SMS===null){ const c=await rcAuth({action:'config'}); SMS=!!c.sms; } return SMS; }
 const pinInput=(name,ac)=>`<input name="${name}" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" required autocomplete="${ac}" placeholder="6 digits" style="letter-spacing:6px;font-size:20px">`;
-function authView(){
-  const signup=location.hash==='#signup';
+const otpBlock=`<div class="row" style="align-items:end"><div><label>OTP sent to this mobile</label><input name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required placeholder="Enter OTP"></div><div><button type="button" class="btn alt" id="sendotp" style="width:100%">Send OTP</button></div></div>`;
+function wireOtp(purpose){
+  const btn=$('#sendotp'); if(!btn) return;
+  btn.onclick=async()=>{ const f=$('#f'), m=$('#msg'); m.innerHTML=''; btn.disabled=true;
+    const r=await rcAuth({action:'otp_send',purpose,mobile:f.mobile.value});
+    if(!r.ok){ btn.disabled=false; m.innerHTML=`<div class="msg err">${AUTH_ERR[r.error]||'Could not send the OTP. Please try again.'}</div>`; return; }
+    m.innerHTML='<div class="msg ok">OTP sent by SMS. It is valid for 10 minutes.</div>'; f.otp.focus();
+    let t=45; btn.textContent='Resend in '+t+'s'; const iv=setInterval(()=>{ t--; if(t<=0){clearInterval(iv);btn.disabled=false;btn.textContent='Resend OTP';} else btn.textContent='Resend in '+t+'s'; },1000);
+  };
+}
+async function authView(){
+  const signup=location.hash==='#signup', reset=location.hash==='#reset', sms=await smsOn();
+  if(reset) return resetView(sms);
   root.innerHTML=`<div class="card auth"><div class="tabs"><button class="btn ${signup?'alt':''}" id="t1">Log in</button><button class="btn ${signup?'':'alt'}" id="t2">Enrol as a doctor</button></div><div id="msg"></div>
   <form id="f">${signup?`
    <label>Full name</label><input name="full_name" required minlength="2" placeholder="Dr. Anita Rao">
@@ -52,29 +64,52 @@ function authView(){
    <label>City</label><input name="city" required>
    <label>Medical council registration no. <span class="mut" style="font-weight:400">(optional)</span></label><input name="council_no">
    <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="tel" placeholder="98xxxxxxxx">
+   ${sms?otpBlock:''}
    <div class="row"><div><label>Choose a 6-digit PIN</label>${pinInput('pin','new-password')}</div><div><label>Enter the PIN again</label>${pinInput('pin2','new-password')}</div></div>`
   :`
    <label>Mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="username" placeholder="98xxxxxxxx">
    <label>6-digit PIN</label>${pinInput('pin','current-password')}`}
-   <p style="margin-top:16px"><button class="btn" style="width:100%">${signup?'Create my account':'Log in'}</button></p>
+   <p style="margin-top:16px"><button class="btn" id="go" style="width:100%">${signup?'Create my account':'Log in'}</button></p>
    ${signup?'<p class="mut" style="font-size:13px">You can log in straight away with your mobile number and PIN. YORO will call you to confirm your details before you can add patients.</p>'
-    :'<p class="mut" style="font-size:13px">Forgot your PIN? Call YORO on 08031152400 to reset it.</p>'}
+    :`<p class="mut" style="font-size:13px"><a href="#reset" id="fp">Forgot PIN?</a>${sms?'':' Call YORO on 08031152400 to reset it.'}</p>`}
   </form></div>`;
   $('#t1').onclick=()=>{location.hash='';authView()}; $('#t2').onclick=()=>{location.hash='#signup';authView()};
-  $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=e.target.querySelector('button'); b.disabled=true;
+  const fp=$('#fp'); if(fp) fp.onclick=e=>{e.preventDefault();location.hash='#reset';authView();};
+  wireOtp('signup');
+  $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=$('#go'); b.disabled=true;
     const err=t=>{b.disabled=false; m.innerHTML=`<div class="msg err">${t}</div>`;};
     if(signup){
       if(!/^\d{6}$/.test(v.pin)) return err(AUTH_ERR.bad_pin);
       if(v.pin!==v.pin2) return err('The two PINs do not match.');
-      const r=await rcAuth({action:'signup',full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,council_no:v.council_no,mobile:v.mobile,pin:v.pin});
+      const r=await rcAuth({action:'signup',full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,council_no:v.council_no,mobile:v.mobile,pin:v.pin,otp:v.otp});
       if(!r.ok) return err(AUTH_ERR[r.error]||'Could not create the account. Please try again.');
       if(r.session){ await sb.auth.setSession(r.session); location.hash=''; return boot(); }
-      location.hash=''; authView(); $('#msg').innerHTML='<div class="msg ok">Account created. Please log in with your mobile number and PIN.</div>';
+      location.hash=''; await authView(); $('#msg').innerHTML='<div class="msg ok">Account created. Please log in with your mobile number and PIN.</div>';
     } else {
       const r=await rcAuth({action:'login',mobile:v.mobile,pin:v.pin});
-      if(!r.ok) return err(r.error==='locked'?`Too many wrong PINs. Please try again in ${r.minutes} minutes, or call YORO on 08031152400.`:`Wrong mobile number or PIN.${r.left?` ${r.left} tries left.`:''}`);
+      if(!r.ok) return err(r.error==='locked'?`Too many wrong PINs. Please try again in ${r.minutes} minutes${sms?', or use Forgot PIN':', or call YORO on 08031152400'}.`:`Wrong mobile number or PIN.${r.left?` ${r.left} tries left.`:''}`);
       await sb.auth.setSession(r.session); boot();
     }
+  };
+}
+function resetView(sms){
+  root.innerHTML=`<div class="card auth"><h2>Reset your PIN</h2><div id="msg"></div>${sms?`
+  <form id="f"><label>Registered mobile number</label><input name="mobile" required type="tel" inputmode="numeric" autocomplete="tel" placeholder="98xxxxxxxx">
+   ${otpBlock}
+   <div class="row"><div><label>New 6-digit PIN</label>${pinInput('pin','new-password')}</div><div><label>Enter it again</label>${pinInput('pin2','new-password')}</div></div>
+   <p style="margin-top:16px"><button class="btn" id="go" style="width:100%">Set new PIN and log in</button></p></form>`
+  :`<p>PIN reset by SMS is not switched on yet. Please call YORO on <a href="tel:08031152400">08031152400</a> and we will set a new PIN for you.</p>`}
+   <p class="mut" style="font-size:13px"><a href="#" id="back">Back to log in</a></p></div>`;
+  $('#back').onclick=e=>{e.preventDefault();location.hash='';authView();};
+  if(!sms) return; wireOtp('reset');
+  $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=$('#go'); b.disabled=true;
+    const err=t=>{b.disabled=false; m.innerHTML=`<div class="msg err">${t}</div>`;};
+    if(!/^\d{6}$/.test(v.pin)) return err(AUTH_ERR.bad_pin);
+    if(v.pin!==v.pin2) return err('The two PINs do not match.');
+    const r=await rcAuth({action:'reset_pin',mobile:v.mobile,otp:v.otp,pin:v.pin});
+    if(!r.ok) return err(AUTH_ERR[r.error]||'Could not reset the PIN. Please try again.');
+    if(r.session){ await sb.auth.setSession(r.session); location.hash=''; return boot(); }
+    location.hash=''; await authView(); $('#msg').innerHTML='<div class="msg ok">PIN changed. Please log in.</div>';
   };
 }
 
@@ -169,5 +204,6 @@ function sentView(p){
   $('#done').onclick=dash;
   root.querySelector('[data-s]').addEventListener('click',()=>sb.rpc('rc_mark_sent',{p_id:p.id}).then(load));
 }
+window.addEventListener('hashchange',()=>{ if(!me && ['','#signup','#reset'].includes(location.hash)) authView(); });
 boot();
 </script></body></html>

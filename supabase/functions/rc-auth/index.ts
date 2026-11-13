@@ -2,7 +2,9 @@
 // The PIN is never used as the password directly: password = HMAC(server key, mobile:PIN),
 // so the only way to try PINs is through this function, which locks a number for 15 minutes
 // after 5 wrong attempts.
-// Actions: signup, login, reset (YORO staff only: sets a new random PIN for a doctor).
+// Actions: config, otp_send, signup, login, reset_pin (doctor, with OTP), reset (YORO staff only).
+// SMS OTPs are sent by 2Factor.in using the TWOFACTOR_API_KEY secret. Without it, OTP is switched off:
+// sign-up works without OTP and forgotten PINs are reset by YORO staff.
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const CORS = {
@@ -15,6 +17,35 @@ const str = (v: unknown, min: number, max: number) => typeof v === "string" && v
 const normMobile = (v: unknown) => String(v ?? "").replace(/\D/g, "").replace(/^(91|0)(?=\d{10}$)/, "");
 const emailFor = (m: string) => `d${m}@doctors.recover.yorohealth.com`;
 const MAX_FAILS = 5, LOCK_MIN = 15;
+const SMS_KEY = Deno.env.get("TWOFACTOR_API_KEY") ?? "";
+const SMS_TEMPLATE = Deno.env.get("TWOFACTOR_TEMPLATE") ?? "";
+const OTP_MIN = 10, OTP_TRIES = 5, RESEND_SEC = 45, SENDS_PER_DAY = 5;
+
+async function sendOtp(mobile: string, purpose: string) {
+  const { data: row } = await admin.from("rc_otps").select("*").eq("mobile", mobile).eq("purpose", purpose).maybeSingle();
+  const today = new Date().toISOString().slice(0, 10);
+  if (row && (Date.now() - new Date(row.last_sent_at).getTime()) / 1000 < RESEND_SEC) return { error: "wait", seconds: RESEND_SEC };
+  const sendsToday = row && row.day === today ? row.sends_today : 0;
+  if (sendsToday >= SENDS_PER_DAY) return { error: "too_many" };
+  const url = `https://2factor.in/API/V1/${encodeURIComponent(SMS_KEY)}/SMS/${mobile}/AUTOGEN${SMS_TEMPLATE ? "/" + encodeURIComponent(SMS_TEMPLATE) : ""}`;
+  let out: { Status?: string; Details?: string } = {};
+  try { out = await (await fetch(url)).json(); } catch (e) { console.error("2factor", String(e)); }
+  if (out.Status !== "Success" || !out.Details) { console.error("2factor send", JSON.stringify(out).slice(0, 200)); return { error: "sms_failed" }; }
+  await admin.from("rc_otps").upsert({ mobile, purpose, session_id: out.Details, expires_at: new Date(Date.now() + OTP_MIN * 60000).toISOString(), attempts: 0, sends_today: sendsToday + 1, day: today, last_sent_at: new Date().toISOString() });
+  return { ok: true };
+}
+async function checkOtp(mobile: string, purpose: string, otp: string): Promise<string | null> {
+  if (!/^\d{4,8}$/.test(otp)) return "otp_wrong";
+  const { data: row } = await admin.from("rc_otps").select("*").eq("mobile", mobile).eq("purpose", purpose).maybeSingle();
+  if (!row || new Date(row.expires_at) < new Date()) return "otp_expired";
+  if (row.attempts >= OTP_TRIES) return "otp_expired";
+  let out: { Status?: string; Details?: string } = {};
+  try { out = await (await fetch(`https://2factor.in/API/V1/${encodeURIComponent(SMS_KEY)}/SMS/VERIFY/${encodeURIComponent(row.session_id)}/${otp}`)).json(); } catch (e) { console.error("2factor verify", String(e)); return "sms_failed"; }
+  if (out.Status === "Success" && /match/i.test(out.Details ?? "")) { await admin.from("rc_otps").delete().eq("mobile", mobile).eq("purpose", purpose); return null; }
+  await admin.from("rc_otps").update({ attempts: row.attempts + 1 }).eq("mobile", mobile).eq("purpose", purpose);
+  return /expire/i.test(out.Details ?? "") ? "otp_expired" : "otp_wrong";
+}
+const weakPin = (pin: string) => /^(\d)\1{5}$/.test(pin) || ["123456", "654321", "012345", "234567", "098765", "987654"].includes(pin);
 
 const URL_ = Deno.env.get("SUPABASE_URL")!, ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
@@ -43,16 +74,45 @@ Deno.serve(async (req) => {
   let b: Record<string, unknown>;
   try { b = await req.json(); } catch { return json({ error: "bad_request" }, 400); }
 
+  if (b.action === "config") return json({ sms: !!SMS_KEY });
+
+  if (b.action === "otp_send") {
+    if (!SMS_KEY) return json({ error: "sms_off" }, 503);
+    const mobile = normMobile(b.mobile), purpose = b.purpose === "reset" ? "reset" : "signup";
+    if (!/^[6-9]\d{9}$/.test(mobile)) return json({ error: "bad_mobile" }, 400);
+    const { data: doc } = await admin.from("rc_doctors").select("id").eq("phone", mobile).maybeSingle();
+    if (purpose === "signup" && doc) return json({ error: "mobile_taken" }, 409);
+    if (purpose === "reset" && !doc) return json({ ok: true }); // do not reveal which numbers are registered
+    const r = await sendOtp(mobile, purpose);
+    return json(r, r.ok ? 200 : r.error === "wait" || r.error === "too_many" ? 429 : 502);
+  }
+
+  if (b.action === "reset_pin") {
+    if (!SMS_KEY) return json({ error: "sms_off" }, 503);
+    const mobile = normMobile(b.mobile), pin = String(b.pin ?? "");
+    if (!/^\d{6}$/.test(pin)) return json({ error: "bad_pin" }, 400);
+    if (weakPin(pin)) return json({ error: "weak_pin" }, 400);
+    const bad = await checkOtp(mobile, "reset", String(b.otp ?? ""));
+    if (bad) return json({ error: bad }, 400);
+    const { data: doc } = await admin.from("rc_doctors").select("id").eq("phone", mobile).maybeSingle();
+    if (!doc) return json({ error: "otp_wrong" }, 400);
+    const { error } = await admin.auth.admin.updateUserById(doc.id, { email: emailFor(mobile), email_confirm: true, password: await derive(mobile, pin) });
+    if (error) { console.error("reset_pin", error.message); return json({ error: "failed" }, 500); }
+    await admin.from("rc_login_attempts").delete().eq("mobile", mobile);
+    return json({ ok: true, session: await signIn(mobile, pin) });
+  }
+
   if (b.action === "signup") {
     const mobile = normMobile(b.mobile), pin = String(b.pin ?? "");
     if (!/^[6-9]\d{9}$/.test(mobile)) return json({ error: "bad_mobile" }, 400);
     if (!/^\d{6}$/.test(pin)) return json({ error: "bad_pin" }, 400);
-    if (/^(\d)\1{5}$/.test(pin) || ["123456", "654321", "012345", "234567"].includes(pin)) return json({ error: "weak_pin" }, 400);
+    if (weakPin(pin)) return json({ error: "weak_pin" }, 400);
     const full_name = str(b.full_name, 2, 120), clinic = str(b.clinic, 2, 160), specialty = str(b.specialty, 2, 80), city = str(b.city, 2, 80);
     if (!full_name || !clinic || !specialty || !city) return json({ error: "missing_fields" }, 400);
     const council_no = str(b.council_no, 1, 40);
     const { data: exists } = await admin.from("rc_doctors").select("id").eq("phone", mobile).maybeSingle();
     if (exists) return json({ error: "mobile_taken" }, 409);
+    if (SMS_KEY) { const bad = await checkOtp(mobile, "signup", String(b.otp ?? "")); if (bad) return json({ error: bad }, 400); }
     const { data, error } = await admin.auth.admin.createUser({
       email: emailFor(mobile), password: await derive(mobile, pin), email_confirm: true,
       user_metadata: { rc_doctor: true, full_name, clinic, specialty, city, phone: mobile, council_no },

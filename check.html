@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Health check-in</title><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="shared.css">
+<style>.box{max-width:560px;margin:20px auto 40px}.opt{display:block;width:100%;text-align:left;margin:8px 0;padding:14px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font:inherit;font-size:17px;cursor:pointer}.opt:active,.opt.on{border-color:var(--teal);background:#e8f6f6}
+.pain{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.pain .opt{text-align:center;margin:0;padding:12px 0}.prog{height:6px;background:var(--line);border-radius:4px;margin-bottom:14px}.prog i{display:block;height:100%;background:var(--teal);border-radius:4px}
+.big{font-size:22px;font-weight:700;color:var(--navy)}.sos{background:#fdecea;color:#8e1b1b;border-radius:10px;padding:12px;margin:14px 0}</style></head><body>
+<header class="top"><div class="wrap"><span class="logo">YORO <b>Recover</b></span><select id="lang" style="width:auto"><option value="en">English</option><option value="hi">हिन्दी</option><option value="mr">मराठी</option></select></div></header>
+<div class="wrap"><div class="box card" id="box"><p class="mut">Loading…</p></div>
+<p class="mut" style="font-size:13px;text-align:center" id="foot"></p></div>
+<script src="vendor/supabase.js"></script><script src="config.js"></script>
+<script>
+const sb=rcClient(), token=location.hash.slice(1), box=document.getElementById('box'); let info=null, L='en', step=0, ans={}, result=null;
+const T={
+en:{hi:n=>`Hello ${n}`,intro:(c,d)=>`${d} at ${c} would like to know how you are recovering. It takes 2 minutes.`,start:'Start',next:'Next',submit:'Send',privacy:'Your answers go only to your doctor and clinic. You can stop these check-ins at any time using the link at the bottom.',stop:'Stop check-ins',stopped:'Check-ins have been stopped. Your doctor has been informed.',
+ q:[{k:'pain',t:'How bad is your pain today? (0 = none, 10 = worst)',pain:1},{k:'meds',t:'Are you taking your medicines as advised?',o:['Yes, all of them','I missed some','I am not taking them']},{k:'unusual',t:'Any swelling, redness, discharge from the wound, or new trouble walking or breathing?',o:['No','A little','Yes, it is serious']},{k:'fever',t:'Do you have a fever (temperature above 100°F)?',o:['No','Yes']},{k:'appt',t:'Your follow-up visit is on {d}. What would you like?',o:['I will come on that date','I need another date','I want to see the doctor sooner']}],
+ note:'Anything else you want to tell the doctor? (optional)',red:'Please call the clinic now. For chest pain, trouble breathing or heavy bleeding, call 112 immediately.',doneT:'Thank you. Your doctor has your answers.',doneRed:'Your doctor has been alerted and the clinic will call you. If you feel worse, call the clinic or go to the nearest emergency room.',doneAmber:'Thank you. The clinic will call you if needed.',already:'You already sent a check-in today. Thank you.',bad:'This link is not valid. Please ask your clinic for a new one.',err:'Could not send. Please try again.',visit:'Follow-up visit'},
+hi:{hi:n=>`नमस्ते ${n}`,intro:(c,d)=>`${c} के ${d} जानना चाहते हैं कि आप कैसे ठीक हो रहे हैं। इसमें 2 मिनट लगेंगे।`,start:'शुरू करें',next:'आगे',submit:'भेजें',privacy:'आपके उत्तर केवल आपके डॉक्टर और क्लिनिक को जाते हैं। आप नीचे दिए लिंक से कभी भी ये चेक-इन बंद कर सकते हैं।',stop:'चेक-इन बंद करें',stopped:'चेक-इन बंद कर दिए गए हैं। आपके डॉक्टर को सूचित कर दिया गया है।',
+ q:[{k:'pain',t:'आज आपका दर्द कितना है? (0 = बिल्कुल नहीं, 10 = सबसे ज़्यादा)',pain:1},{k:'meds',t:'क्या आप सलाह के अनुसार दवाइयाँ ले रहे हैं?',o:['हाँ, सभी','कुछ छूट गईं','नहीं ले रहे']},{k:'unusual',t:'क्या घाव में सूजन, लालिमा, रिसाव, या चलने/साँस लेने में नई तकलीफ़ है?',o:['नहीं','थोड़ी','हाँ, गंभीर है']},{k:'fever',t:'क्या आपको बुखार है (100°F से ऊपर)?',o:['नहीं','हाँ']},{k:'appt',t:'आपकी फॉलो-अप विज़िट {d} को है। आप क्या चाहेंगे?',o:['मैं उसी तारीख को आऊँगा/आऊँगी','मुझे दूसरी तारीख चाहिए','मुझे डॉक्टर को जल्दी दिखाना है']}],
+ note:'डॉक्टर को कुछ और बताना है? (वैकल्पिक)',red:'कृपया अभी क्लिनिक को फ़ोन करें। सीने में दर्द, साँस में तकलीफ़ या ज़्यादा खून बहे तो तुरंत 112 पर कॉल करें।',doneT:'धन्यवाद। आपके उत्तर डॉक्टर तक पहुँच गए हैं।',doneRed:'आपके डॉक्टर को सूचित कर दिया गया है और क्लिनिक आपको फ़ोन करेगा। तबीयत बिगड़े तो क्लिनिक को फ़ोन करें या नज़दीकी इमरजेंसी में जाएँ।',doneAmber:'धन्यवाद। ज़रूरत हुई तो क्लिनिक आपको फ़ोन करेगा।',already:'आप आज चेक-इन भेज चुके हैं। धन्यवाद।',bad:'यह लिंक मान्य नहीं है। कृपया क्लिनिक से नया लिंक माँगें।',err:'भेज नहीं सके। कृपया फिर कोशिश करें।',visit:'फॉलो-अप विज़िट'},
+mr:{hi:n=>`नमस्कार ${n}`,intro:(c,d)=>`${c} येथील ${d} यांना तुम्ही कसे बरे होत आहात हे जाणून घ्यायचे आहे. यासाठी 2 मिनिटे लागतील.`,start:'सुरू करा',next:'पुढे',submit:'पाठवा',privacy:'तुमची उत्तरे फक्त तुमच्या डॉक्टरांना आणि क्लिनिकला जातात. खालील लिंकवरून तुम्ही हे चेक-इन कधीही थांबवू शकता.',stop:'चेक-इन थांबवा',stopped:'चेक-इन थांबवले आहेत. तुमच्या डॉक्टरांना कळवले आहे.',
+ q:[{k:'pain',t:'आज तुमचे दुखणे किती आहे? (0 = अजिबात नाही, 10 = सर्वात जास्त)',pain:1},{k:'meds',t:'तुम्ही सांगितल्याप्रमाणे औषधे घेत आहात का?',o:['हो, सर्व','काही चुकली','घेत नाही']},{k:'unusual',t:'जखमेवर सूज, लालसरपणा, पाणी/पू येणे, किंवा चालण्यास/श्वास घेण्यास नवा त्रास आहे का?',o:['नाही','थोडे','हो, गंभीर आहे']},{k:'fever',t:'तुम्हाला ताप आहे का (100°F पेक्षा जास्त)?',o:['नाही','हो']},{k:'appt',t:'तुमची पुढील तपासणी {d} रोजी आहे. तुम्हाला काय हवे आहे?',o:['मी त्या तारखेला येईन','मला दुसरी तारीख हवी','मला डॉक्टरांना लवकर भेटायचे आहे']}],
+ note:'डॉक्टरांना आणखी काही सांगायचे आहे का? (ऐच्छिक)',red:'कृपया आत्ताच क्लिनिकला फोन करा. छातीत दुखणे, श्वास घेण्यास त्रास किंवा खूप रक्तस्राव झाल्यास लगेच 112 वर कॉल करा.',doneT:'धन्यवाद. तुमची उत्तरे डॉक्टरांपर्यंत पोहोचली आहेत.',doneRed:'तुमच्या डॉक्टरांना कळवले आहे आणि क्लिनिक तुम्हाला फोन करेल. बरे वाटत नसल्यास क्लिनिकला फोन करा किंवा जवळच्या इमर्जन्सीमध्ये जा.',doneAmber:'धन्यवाद. गरज असल्यास क्लिनिक तुम्हाला फोन करेल.',already:'तुम्ही आज चेक-इन पाठवले आहे. धन्यवाद.',bad:'ही लिंक वैध नाही. कृपया क्लिनिककडून नवी लिंक मागा.',err:'पाठवता आले नाही. कृपया पुन्हा प्रयत्न करा.',visit:'पुढील तपासणी'}};
+const t=()=>T[L];
+const fd=s=>new Date(s+'T00:00:00').toLocaleDateString(L==='en'?'en-IN':L==='hi'?'hi-IN':'mr-IN',{day:'numeric',month:'long'});
+async function init(){
+  if(!token){box.innerHTML=`<p>${t().bad}</p>`;return;}
+  const {data,error}=await sb.rpc('rc_checkin_info',{p_token:token});
+  if(error||!data){box.innerHTML=`<p>${t().bad}</p>`;return;}
+  info=data; L=info.language||'en'; document.getElementById('lang').value=L; document.documentElement.lang=L; render();
+}
+document.getElementById('lang').onchange=e=>{L=e.target.value;document.documentElement.lang=L;render();};
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function render(){
+  if(!info)return; const x=t();
+  document.getElementById('foot').innerHTML=info.stopped?'':`<a href="#" id="stop">${x.stop}</a>`;
+  const sp=document.getElementById('stop'); if(sp)sp.onclick=async e=>{e.preventDefault();await sb.rpc('rc_stop_checkins',{p_token:token});info.stopped=true;render();};
+  if(info.stopped){box.innerHTML=`<p class="big">${x.stopped}</p>`;return;}
+  if(step===99){box.innerHTML=`<p class="big">${result==='red'?x.doneRed:result==='amber'?x.doneAmber:x.doneT}</p>${result==='red'?`<div class="sos">${x.red}</div>`:''}`;return;}
+  if(info.done_today){box.innerHTML=`<p class="big">${x.already}</p>`;return;}
+  if(step===0){box.innerHTML=`<p class="big">${x.hi(esc(info.first_name))}</p><p>${x.intro(esc(info.clinic),esc(info.doctor))}</p><p class="mut" style="font-size:14px">${x.privacy}</p><button class="btn" style="width:100%;font-size:17px" id="go">${x.start}</button>`;document.getElementById('go').onclick=()=>{step=1;render();};return;}
+  const n=x.q.length;
+  if(step<=n){const q=x.q[step-1]; let h=`<div class="prog"><i style="width:${step/(n+1)*100}%"></i></div><p class="big">${esc(q.t.replace('{d}',fd(info.followup_date)))}</p>`;
+    if(q.pain){h+='<div class="pain">'+[...Array(11).keys()].map(i=>`<button class="opt" data-v="${i}">${i}</button>`).join('')+'</div>';}
+    else h+=q.o.map((o,i)=>`<button class="opt" data-v="${i}">${esc(o)}</button>`).join('');
+    box.innerHTML=h; box.querySelectorAll('.opt').forEach(b=>b.onclick=()=>{ans[q.k]=+b.dataset.v;step++;render();}); return;}
+  box.innerHTML=`<div class="prog"><i style="width:92%"></i></div><p class="big">${x.note}</p><textarea id="nt" maxlength="500"></textarea><p><button class="btn" style="width:100%;font-size:17px" id="sub">${x.submit}</button></p><div id="m"></div>`;
+  document.getElementById('sub').onclick=async function(){this.disabled=true;
+    const {data,error}=await sb.rpc('rc_submit_checkin',{p_token:token,p_pain:ans.pain,p_meds:ans.meds,p_unusual:ans.unusual,p_fever:ans.fever,p_appt:ans.appt,p_note:document.getElementById('nt').value||null});
+    if(error){this.disabled=false;document.getElementById('m').innerHTML=`<div class="msg err">${error.message.includes('already')?x.already:x.err}</div>`;return;}
+    result=data.status; step=99; render();};
+}
+init();
+</script></body></html>

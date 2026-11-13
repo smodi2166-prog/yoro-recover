@@ -1,0 +1,161 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Doctor portal | YORO Recover</title><meta name="robots" content="noindex">
+<link rel="stylesheet" href="shared.css">
+<style>
+.auth{max-width:480px;margin:36px auto}.tabs{display:flex;gap:8px;margin-bottom:8px}.tabs button{flex:1}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}th{color:var(--mut);font-weight:600}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}@media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px}.stat b{font-size:26px;display:block;color:var(--navy)}
+.check{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-weight:400}.check input{width:auto;margin-top:5px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}.scroll{overflow-x:auto}
+</style></head><body>
+<header class="top"><div class="wrap"><a class="logo" href="/">YORO <b>Recover</b></a><nav id="nav"></nav></div></header>
+<div class="wrap" id="root"><p class="mut" style="padding:40px 0">Loading…</p></div>
+<footer>Patient data is visible only to the treating doctor. · <a href="privacy.html">Privacy</a></footer>
+<script src="vendor/supabase.js"></script><script src="config.js"></script>
+<script>
+const sb = rcClient(); const $ = s=>document.querySelector(s); const root = $('#root');
+let me=null, doc=null, pats=[], chks=[];
+const MSG = {
+ en:(p,c,u)=>`Hello ${p}, this is ${c}. Please answer a short 2-minute health check-in after your discharge: ${u}`,
+ hi:(p,c,u)=>`नमस्ते ${p}, यह ${c} से है। डिस्चार्ज के बाद कृपया यह 2 मिनट का स्वास्थ्य चेक-इन भरें: ${u}`,
+ mr:(p,c,u)=>`नमस्कार ${p}, हे ${c} कडून आहे. डिस्चार्जनंतर कृपया हे 2 मिनिटांचे आरोग्य चेक-इन भरा: ${u}`};
+const iso=d=>d.toISOString().slice(0,10);
+const fmt=s=>new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+const ago=t=>{const h=(Date.now()-new Date(t))/36e5; return h<1?'just now':h<24?Math.round(h)+' h ago':Math.round(h/24)+' d ago'};
+function link(p){ return new URL('check.html',location.href).href.split('#')[0]+'#'+p.token; }
+
+async function boot(){
+  const {data:{session}}=await sb.auth.getSession(); me=session&&session.user;
+  if(!me){ return authView(); }
+  let r=await sb.from('rc_doctors').select('*').eq('id',me.id).maybeSingle();
+  if(!r.data){ const m=me.user_metadata||{};
+    if(m.full_name){ const ins=await sb.from('rc_doctors').insert({id:me.id,full_name:m.full_name,clinic:m.clinic,specialty:m.specialty,city:m.city,council_no:m.council_no,phone:m.phone}); if(ins.error){return fatal(ins.error.message);} r=await sb.from('rc_doctors').select('*').eq('id',me.id).maybeSingle(); }
+  }
+  doc=r.data; const adm=(await sb.rpc('rc_is_admin')).data===true; window.isAdmin=adm;
+  if(!doc&&adm){ location.href='admin.html'; return; }
+  if(!doc){ return fatal('Your profile is missing. Please sign out and enrol again.'); }
+  nav(); await load(); dash();
+}
+function nav(){ $('#nav').innerHTML=`${window.isAdmin?'<a class="btn alt sm" href="admin.html" style="margin-right:8px">Approve doctors</a>':''}<span class="mut" style="margin-right:10px">${esc(doc.full_name)}</span><button class="btn alt sm" id="so">Sign out</button>`; $('#so').onclick=async()=>{await sb.auth.signOut();location.hash='';location.reload();}; }
+function fatal(m){ root.innerHTML=`<div class="card auth"><div class="msg err">${esc(m)}</div><button class="btn alt" onclick="sb.auth.signOut().then(()=>location.reload())">Sign out</button></div>`; }
+
+function authView(){
+  const signup=location.hash==='#signup';
+  root.innerHTML=`<div class="card auth"><div class="tabs"><button class="btn ${signup?'alt':''}" id="t1">Log in</button><button class="btn ${signup?'':'alt'}" id="t2">Enrol as a doctor</button></div><div id="msg"></div>
+  <form id="f">${signup?`
+   <label>Full name</label><input name="full_name" required minlength="2" placeholder="Dr. Anita Rao">
+   <div class="row"><div><label>Clinic or hospital</label><input name="clinic" required></div><div><label>Specialty</label><input name="specialty" required placeholder="Orthopaedics"></div></div>
+   <div class="row"><div><label>City</label><input name="city" required></div><div><label>Mobile</label><input name="phone" required type="tel" placeholder="98xxxxxxxx"></div></div>
+   <label>Medical council registration no.</label><input name="council_no" required minlength="3">`:''}
+   <label>Email</label><input name="email" type="email" required autocomplete="email">
+   <label>Password</label><input name="password" type="password" required minlength="8" autocomplete="${signup?'new-password':'current-password'}" placeholder="At least 8 characters">
+   <p style="margin-top:16px"><button class="btn" style="width:100%">${signup?'Create my account':'Log in'}</button></p>
+   ${signup?'<p class="mut" style="font-size:13px">No email link needed: you can log in straight away. We check your registration number before you can add patients, usually within a working day.</p>':''}
+  </form></div>`;
+  $('#t1').onclick=()=>{location.hash='';authView()}; $('#t2').onclick=()=>{location.hash='#signup';authView()};
+  $('#f').onsubmit=async e=>{e.preventDefault(); const v=Object.fromEntries(new FormData(e.target)); const m=$('#msg'); m.innerHTML=''; const b=e.target.querySelector('button'); b.disabled=true;
+    if(signup){ const {data,error}=await sb.auth.signUp({email:v.email,password:v.password,options:{data:{full_name:v.full_name,clinic:v.clinic,specialty:v.specialty,city:v.city,phone:v.phone,council_no:v.council_no}}});
+      b.disabled=false; if(error){m.innerHTML=`<div class="msg err">${esc(error.message)}</div>`;return;}
+      if(data.session){location.hash='';return boot();}
+      const li=await sb.auth.signInWithPassword({email:v.email,password:v.password});
+      if(!li.error){location.hash='';return boot();}
+      m.innerHTML='<div class="msg ok">Account created. Please log in with your email and password.</div>'; location.hash=''; setTimeout(authView,1500);
+    } else { const {error}=await sb.auth.signInWithPassword({email:v.email,password:v.password}); b.disabled=false;
+      if(error){m.innerHTML=`<div class="msg err">${/invalid login/i.test(error.message)?'Wrong email or password.':esc(error.message)}</div>`;return;} boot(); }
+  };
+}
+
+async function load(){
+  const a=await sb.from('rc_patients').select('*').order('followup_date');
+  const b=await sb.from('rc_checkins').select('*').order('created_at',{ascending:false});
+  pats=a.data||[]; chks=b.data||[];
+}
+const PLAN=[1,3,7,10,14,21,28,35,42,49,56,70,84];
+function dayN(a,b){return Math.round((new Date(b+'T00:00:00')-new Date(a+'T00:00:00'))/864e5);}
+// The check-in day that is due now (or null): plan days before follow-up, plus the day before the visit.
+function due(p){
+  if(p.stopped_at) return null; const today=iso(new Date()); const total=dayN(p.discharge_date,p.followup_date); const n=dayN(p.discharge_date,today);
+  if(n<1||today>p.followup_date) return null;
+  const days=PLAN.filter(d=>d<total); if(total>1) days.push(total-1);
+  const cur=days.filter(d=>d<=n).sort((a,b)=>b-a)[0]; if(cur==null) return null;
+  const dueDate=iso(new Date(new Date(p.discharge_date+'T00:00:00').getTime()+cur*864e5+43200000));
+  const answered=chks.some(c=>c.patient_id===p.id&&c.created_at.slice(0,10)>=dueDate);
+  const sent=p.last_sent_at&&p.last_sent_at.slice(0,10)>=dueDate;
+  if(answered||sent) return null; return {day:cur,visitTomorrow:cur===total-1};
+}
+function status(p){
+  const cs=chks.filter(c=>c.patient_id===p.id), last=cs[0];
+  if(p.stopped_at) return {k:6,cls:'N',label:'Check-ins stopped',why:'The patient chose to stop check-ins. Call if needed.'};
+  const unanswered=p.last_sent_at&&(!last||last.created_at<p.last_sent_at)&&(Date.now()-new Date(p.last_sent_at))/864e5>1;
+  if(unanswered) return {k:2,cls:'A',label:'Not confirmed',why:'No reply to the check-in sent '+ago(p.last_sent_at)+'. The clinic should call.',last};
+  if(!last){ return p.last_sent_at?{k:5,cls:'N',label:'Waiting for reply',why:'Check-in sent '+ago(p.last_sent_at)}:{k:5,cls:'N',label:'Link not sent yet',why:'Send the check-in link on WhatsApp'}; }
+  if(last.handled_at) return {k:7,cls:'G',label:'Called',why:'Marked as called '+ago(last.handled_at),last};
+  if(last.appt===2) return {k:0,cls:'R',label:'Call back early',why:'Asked to see the doctor sooner',last};
+  if(last.status==='red') return {k:0,cls:'R',label:'Needs a call now',why:'Warning signs reported: pain '+last.pain+(last.fever?', fever':'')+(last.unusual===2?', serious symptom':''),last};
+  if(last.appt===1) return {k:1,cls:'A',label:'Wants another date',why:'Cannot make the planned follow-up date',last};
+  if(last.status==='amber') return {k:3,cls:'A',label:'Watch',why:'Mild concerns, pain '+last.pain,last};
+  return {k:4,cls:'G',label:'Confirmed',why:'Doing well, visit confirmed',last};
+}
+function dash(){
+  const rows=pats.map(p=>({p,s:status(p)})).sort((x,y)=>x.s.k-y.s.k||x.p.followup_date.localeCompare(y.p.followup_date));
+  const n=k=>rows.filter(r=>r.s.k===k).length;
+  const unv=!doc.verified;
+  root.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin:22px 0 4px;gap:10px;flex-wrap:wrap"><h2 style="margin:0">Follow-up visits</h2><button class="btn" id="add" ${unv?'disabled':''}>+ Enrol a patient</button></div>
+  ${unv?'<div class="msg info">Your registration number is being checked. You can add patients as soon as we confirm it. We will email you. Questions: care@yorohealth.com</div>':''}
+  ${(()=>{const d=pats.map(p=>({p,d:due(p)})).filter(x=>x.d); return d.length?`<div class="card" style="margin-top:14px;border-color:var(--teal)"><h3 style="margin-bottom:6px">Check-ins to send today (${d.length})</h3><p class="mut" style="margin-top:0;font-size:14px">Tap to open WhatsApp with the message ready. Each one takes a few seconds.</p>${d.map(({p,d})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)"><span><b>${esc(p.full_name)}</b> · day ${d.day} after discharge${d.visitTomorrow?' · <b>visit tomorrow</b>':''}</span>${waBtn(p,'Send')}</div>`).join('')}</div>`:''})()}
+  <div class="stats"><div class="stat"><b>${n(0)}</b>to call back now</div><div class="stat"><b>${n(1)+n(2)}</b>need a call from the clinic</div><div class="stat"><b>${rows.filter(r=>r.s.cls==='G').length}</b>confirmed or called</div><div class="stat"><b>${pats.length}</b>patients enrolled</div></div>
+  <div class="card scroll">${rows.length?`<table><tr><th>Patient</th><th>Procedure</th><th>Follow-up</th><th>Status</th><th></th></tr>${rows.map(({p,s})=>`<tr><td><b>${esc(p.full_name)}</b><br><span class="mut">${esc(p.phone)}</span></td><td>${esc(p.procedure)}</td><td>${fmt(p.followup_date)}</td><td><span class="pill ${s.cls}">${esc(s.label)}</span><br><span class="mut">${esc(s.why)}</span>${s.last&&s.last.note?`<br><i>“${esc(s.last.note)}”</i>`:''}</td>
+   <td><div class="acts">${p.stopped_at?'':waBtn(p,'Send check-in on WhatsApp')}
+   ${s.last&&!s.last.handled_at?`<button class="btn alt sm" data-h="${s.last.id}">Mark as called</button>`:''}<a class="btn alt sm" href="tel:${esc(p.phone)}">Call</a><button class="btn alt sm" data-d="${p.id}">Remove</button></div></td></tr>`).join('')}</table>`:'<p class="mut">No patients yet. Enrol your first patient at discharge.</p>'}</div>`;
+  const ab=$('#add'); if(ab&&!unv) ab.onclick=addView;
+  root.querySelectorAll('[data-s]').forEach(a=>a.addEventListener('click',()=>{sb.rpc('rc_mark_sent',{p_id:a.dataset.s}).then(()=>load()).then(()=>setTimeout(dash,300));}));
+  root.querySelectorAll('[data-h]').forEach(b=>b.onclick=async()=>{b.disabled=true;await sb.from('rc_checkins').update({handled_at:new Date().toISOString()}).eq('id',b.dataset.h);await load();dash();});
+  root.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this patient and all their check-ins permanently?'))return;await sb.from('rc_patients').delete().eq('id',b.dataset.d);await load();dash();});
+}
+function waUrl(p){ return `https://wa.me/${waNum(p.phone)}?text=${encodeURIComponent(MSG[p.language](p.full_name.split(' ')[0],doc.clinic,link(p)))}`; }
+function waBtn(p,label){ return `<a class="btn sm" target="_blank" rel="noopener" data-s="${p.id}" href="${waUrl(p)}">${label}</a>`; }
+function waNum(ph){ let d=String(ph).replace(/\D/g,''); if(d.length===10)d='91'+d; return d; }
+function addView(){
+  const today=iso(new Date()), fu=iso(new Date(Date.now()+14*864e5));
+  root.innerHTML=`<p style="margin-top:20px"><a href="#" id="back">← Back</a></p><div class="card" style="max-width:720px"><h2>Enrol a patient</h2><div id="msg"></div>
+  <div style="background:#f0f7f7;border-radius:10px;padding:14px;margin:10px 0"><b>Fill from the discharge summary</b> <span class="mut">(optional)</span><br><span class="mut" style="font-size:13px">Photo or PDF. It is read by an AI service to fill the form below and is not stored. Check every field before saving.</span>
+   <input type="file" id="sum" accept="image/*,application/pdf" style="margin-top:8px"><div id="summsg"></div></div>
+  <form id="f"><div class="row"><div><label>Patient name</label><input name="full_name" required></div><div><label>Patient mobile (WhatsApp)</label><input name="phone" type="tel" required placeholder="98xxxxxxxx"></div></div>
+  <div class="row"><div><label>Procedure or diagnosis</label><input name="procedure" required placeholder="Total knee replacement"></div><div><label>Check-in language</label><select name="language"><option value="en">English</option><option value="hi">हिन्दी</option><option value="mr">मराठी</option></select></div></div>
+  <div class="row"><div><label>Discharge date</label><input name="discharge_date" type="date" required value="${today}"></div><div><label>Follow-up visit date</label><input name="followup_date" type="date" required value="${fu}"></div></div>
+  <label>Advice (optional)</label><textarea name="advice" placeholder="Physiotherapy, wound care, activity limits"></textarea>
+  <label>Medicines (optional)</label><textarea name="medicines"></textarea><label>Blood tests / checkups due (optional)</label><textarea name="tests"></textarea>
+  <label class="check"><input type="checkbox" name="consent" required><span>I have explained to the patient (or their guardian) that YORO Recover will send health check-ins to this mobile number until the follow-up visit, that their answers will be shared with me and my clinic, and the patient agreed. They can stop at any time from the link.</span></label>
+  <p style="margin-top:16px"><button class="btn">Save patient</button></p></form></div>`;
+  $('#back').onclick=e=>{e.preventDefault();dash();};
+  $('#sum').onchange=async e=>{const f=e.target.files[0]; if(!f)return; const m=$('#summsg'); m.innerHTML='<div class="msg info">Reading the summary…</div>';
+    try{ const {media_type,data}=await toB64(f);
+      const {data:r,error}=await sb.functions.invoke('rc-read-summary',{body:{media_type,data}});
+      if(error){ let code=''; try{code=(await error.context.json()).error}catch(_){}
+        m.innerHTML=`<div class="msg err">${code==='not_enabled'?'Summary reading is not switched on yet. Please fill the form by hand.':code==='too_big'?'The file is too large. Try a photo or a smaller PDF.':'Could not read this file. Please fill the form by hand.'}</div>`; return; }
+      const F=r.fields||{}, form=$('#f'); let n=0;
+      for(const k of ['full_name','procedure','discharge_date','followup_date','advice','medicines','tests']){ const v=F[k==='full_name'?'patient_name':k]; if(v&&form[k]){ if(k.endsWith('_date')&&!/^\d{4}-\d{2}-\d{2}$/.test(v))continue; form[k].value=v; form[k].style.background='#fff8e1'; n++; } }
+      m.innerHTML=`<div class="msg ok">Filled ${n} fields (highlighted). Please check each one against the summary.</div>`;
+    }catch(err){ m.innerHTML='<div class="msg err">Could not read this file. Please fill the form by hand.</div>'; }
+  };
+  $('#f').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.target));const b=e.target.querySelector('button');b.disabled=true;
+    if(v.followup_date<v.discharge_date){$('#msg').innerHTML='<div class="msg err">The follow-up date must be after discharge.</div>';b.disabled=false;return;}
+    const {data,error}=await sb.from('rc_patients').insert({doctor_id:me.id,full_name:v.full_name.trim(),phone:v.phone.trim(),language:v.language,procedure:v.procedure.trim(),discharge_date:v.discharge_date,followup_date:v.followup_date,advice:v.advice||null,medicines:v.medicines||null,tests:v.tests||null,consent_attested:true}).select().single();
+    if(error){$('#msg').innerHTML=`<div class="msg err">${esc(error.message)}</div>`;b.disabled=false;return;}
+    await load(); sentView(data);
+  };
+}
+async function toB64(f){
+  if(f.type==='application/pdf'){ if(f.size>5e6) throw new Error('big'); const b=new Uint8Array(await f.arrayBuffer()); let s=''; for(let i=0;i<b.length;i+=32768) s+=String.fromCharCode.apply(null,b.subarray(i,i+32768)); return {media_type:'application/pdf',data:btoa(s)}; }
+  const img=await createImageBitmap(f); const sc=Math.min(1,2000/Math.max(img.width,img.height)); const c=document.createElement('canvas'); c.width=Math.round(img.width*sc); c.height=Math.round(img.height*sc); c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+  return {media_type:'image/jpeg',data:c.toDataURL('image/jpeg',0.85).split(',')[1]};
+}
+function sentView(p){
+  const url=link(p);
+  root.innerHTML=`<div class="card" style="max-width:640px;margin:30px auto;text-align:center"><h2>${esc(p.full_name)} is enrolled</h2><p class="mut">Send the private check-in link now. It opens on any phone and needs no login. We will remind you on the dashboard when the next check-in is due.</p><p>${waBtn(p,'Send on WhatsApp')}</p><p class="mut" style="word-break:break-all;font-size:13px">${esc(url)}</p><p><button class="btn alt" id="done">Back to follow-up list</button></p></div>`;
+  $('#done').onclick=dash;
+  root.querySelector('[data-s]').addEventListener('click',()=>sb.rpc('rc_mark_sent',{p_id:p.id}).then(load));
+}
+boot();
+</script></body></html>

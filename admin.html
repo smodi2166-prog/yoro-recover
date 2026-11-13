@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Approve doctors | YORO Recover</title><meta name="robots" content="noindex"><link rel="stylesheet" href="shared.css">
+<style>table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}th{color:var(--mut)}</style></head><body>
+<header class="top"><div class="wrap"><a class="logo" href="/">YORO <b>Recover</b> <span class="mut" style="font-weight:400;font-size:14px">· YORO staff</span></a><nav><a class="btn alt sm" href="app.html">Doctor portal</a> <button class="btn alt sm" id="so">Sign out</button></nav></div></header>
+<div class="wrap" id="root"><p class="mut" style="padding:30px 0">Loading…</p></div>
+<script src="vendor/supabase.js"></script><script src="config.js"></script>
+<script>
+const sb=rcClient(), root=document.getElementById('root');
+document.getElementById('so').onclick=async()=>{await sb.auth.signOut();location.href='app.html';};
+async function boot(){
+  const {data:{session}}=await sb.auth.getSession();
+  if(!session){root.innerHTML='<div class="msg info" style="margin-top:30px">Please <a href="app.html">log in</a> with your YORO staff email first.</div>';return;}
+  const {data:adm}=await sb.rpc('rc_is_admin');
+  if(adm!==true){root.innerHTML='<div class="msg err" style="margin-top:30px">This page is for YORO staff only. If you are staff, make sure you confirmed your email address.</div>';return;}
+  const {data,error}=await sb.from('rc_doctors').select('*').order('verified').order('created_at',{ascending:false});
+  if(error){root.innerHTML=`<div class="msg err">${esc(error.message)}</div>`;return;}
+  const pend=data.filter(d=>!d.verified).length;
+  root.innerHTML=`<h2 style="margin-top:24px">Doctors (${pend} waiting for approval)</h2>
+  <p class="mut">Check each registration number on the state medical council or NMC register before approving. Approved doctors can enrol patients.</p>
+  <div class="card" style="overflow-x:auto"><table><tr><th>Doctor</th><th>Clinic</th><th>Registration no.</th><th>Mobile</th><th>Signed up</th><th></th></tr>
+  ${data.map(d=>`<tr><td><b>${esc(d.full_name)}</b><br><span class="mut">${esc(d.specialty)}</span></td><td>${esc(d.clinic)}<br><span class="mut">${esc(d.city)}</span></td><td>${esc(d.council_no)}</td><td><a href="tel:${esc(d.phone)}">${esc(d.phone)}</a></td><td>${new Date(d.created_at).toLocaleDateString('en-IN')}</td>
+  <td>${d.verified?`<span class="pill G">Approved</span> <button class="btn alt sm" data-v="${d.id}" data-to="0">Suspend</button>`:`<button class="btn sm" data-v="${d.id}" data-to="1">Approve</button>`}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No doctors yet.</td></tr>'}</table></div>`;
+  root.querySelectorAll('[data-v]').forEach(b=>b.onclick=async()=>{ if(b.dataset.to==='0'&&!confirm('Suspend this doctor? They will not be able to add new patients.'))return; b.disabled=true;
+    const {error}=await sb.from('rc_doctors').update({verified:b.dataset.to==='1'}).eq('id',b.dataset.v); if(error)alert(error.message); boot(); });
+}
+boot();
+</script></body></html>
